@@ -1,4 +1,4 @@
-name: Node.js App Deploy to EKS
+name: Continuous Deployment
 
 on:
   push:
@@ -11,21 +11,25 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
 
       - name: Install kubectl
-        uses: azure/setup-kubectl@v1
+        uses: azure/setup-kubectl@v2
         with:
-          kubectl-version: 'v1.24.0' # Specify the version you need
+          version: 'v1.24.0' # You can specify the desired version
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1 # Update with your AWS region
+          aws-region: us-east-1
+
+      - name: Update kube config
+        run: aws eks update-kubeconfig --name primuslearning-migration
 
       - name: Create ECR Repository
         run: aws ecr create-repository --repository-name node-app || true
@@ -43,22 +47,12 @@ jobs:
           docker build -t $REGISTRY/$REPOSITORY:$IMAGE_TAG .
           docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG
 
-      - name: Check if EKS Cluster Exists
-        id: eks-check
-        run: |
-          eks_cluster_name="primuslearning-migration"
-          aws eks describe-cluster --name $eks_cluster_name --query 'cluster.status' --output text || echo "Cluster does not exist"
-        continue-on-error: true
-
-      - name: Create EKS Cluster (if it does not exist)
-        run: |
-          eks_cluster_name="primuslearning-migration"
-          if [[ "$eks_check" == "Cluster does not exist" ]]; then
-            eksctl create cluster --name $eks_cluster_name --region us-east-1 --nodegroup-name linux-nodes --node-type t2.micro --nodes 2
-          fi
-
-      - name: Update kube config
-        run: aws eks update-kubeconfig --name primuslearning-migration
-
       - name: Deploy to EKS
-        run: kubectl apply -f deployment.yaml -f service.yaml
+        uses: swdotcom/update-and-apply-kubernetes-configs@v1
+        with:
+          k8-config-file-paths: |
+            deployment.yaml
+            service.yaml
+          replacement-method: envsubst
+        env:
+          IMAGE_TAG: ${{ github.sha }}
